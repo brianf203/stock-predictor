@@ -6,6 +6,7 @@ os.environ['SSL_CERT_FILE'] = certifi.where()
 os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 from prediction_engine import PredictionEngine
@@ -18,7 +19,7 @@ load_dotenv()
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix='$sp ', intents=intents, help_command=None)
+bot = commands.Bot(command_prefix=None, intents=intents, help_command=None)
 prediction_engine = PredictionEngine()
 chart_generator = ChartGenerator()
 news_analyzer = NewsAnalyzer()
@@ -27,46 +28,47 @@ news_analyzer = NewsAnalyzer()
 async def on_ready():
     print(f'Bot logged in as {bot.user}')
     print(f'Bot ID: {bot.user.id}')
+    
+    try:
+        synced = await bot.tree.sync()
+        print(f'Synced {len(synced)} command(s)')
+    except Exception as e:
+        print(f'Failed to sync commands: {e}')
+    
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="/help"))
 
-@bot.command(name='help')
-async def help_command(ctx):
+@bot.tree.command(name="help", description="Display all available commands")
+async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="📊 Stock Predictor Bot - Commands",
         description="Get accurate stock price predictions for short and long-term horizons.",
         color=discord.Color.blue()
     )
     embed.add_field(
-        name="`$sp help`",
+        name="`/help`",
         value="Display this help message",
         inline=False
     )
     embed.add_field(
-        name="`$sp predict <ticker>`",
-        value="Get short-term (1-5 days) and long-term (6-12 months) price predictions for a stock with chart and top news.\nExample: `$sp predict AAPL`",
+        name="`/predict <ticker>`",
+        value="Get short-term (1-5 days) and long-term (6-12 months) price predictions for a stock with chart.\nExample: `/predict AAPL`",
         inline=False
     )
     embed.add_field(
-        name="`$sp news <ticker>`",
-        value="Get recent news articles for a stock with sentiment analysis.\nExample: `$sp news AAPL`",
+        name="`/news <ticker>`",
+        value="Get recent news articles for a stock with sentiment analysis.\nExample: `/news AAPL`",
         inline=False
     )
     embed.set_footer(text="Powered by advanced ML models and fundamental analysis")
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
-@bot.command(name='predict')
-async def predict_command(ctx, ticker: str = None):
-    if not ticker:
-        embed = discord.Embed(
-            title="❌ Error",
-            description="Please provide a stock ticker.\nUsage: `$sp predict <ticker>`\nExample: `$sp predict AAPL`",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-
+@bot.tree.command(name="predict", description="Get stock price predictions for short and long-term horizons")
+@app_commands.describe(ticker="Stock ticker symbol (e.g., AAPL, TSLA, MSFT)")
+async def predict_command(interaction: discord.Interaction, ticker: str):
     ticker = ticker.upper().strip()
     
-    await ctx.send(f"🔍 Analyzing {ticker}... This may take a moment.")
+    await interaction.response.defer()
+    await interaction.followup.send(f"🔍 Analyzing {ticker}... This may take a moment.")
     
     try:
         predictions = await prediction_engine.get_predictions(ticker)
@@ -81,8 +83,8 @@ async def predict_command(ctx, ticker: str = None):
         
         # First embed: Current price, analysis date, and chart
         embed1 = discord.Embed(
-            title=f"📈 Predictions for {display_ticker}",
-            color=discord.Color.green()
+            title=f"📈 {display_ticker} - Current Info",
+            color=discord.Color.blue()
         )
         
         embed1.add_field(
@@ -109,7 +111,7 @@ async def predict_command(ctx, ticker: str = None):
             files.append(chart_file)
             embed1.set_image(url=f"attachment://{ticker}_chart.png")
         
-        await ctx.send(embed=embed1, files=files if files else None)
+        await interaction.followup.send(embed=embed1, files=files if files else None)
         
         # Second embed: Predictions
         embed2 = discord.Embed(
@@ -144,7 +146,7 @@ async def predict_command(ctx, ticker: str = None):
         
         embed2.set_footer(text="Predictions are for informational purposes only. Not financial advice.")
         
-        await ctx.send(embed=embed2)
+        await interaction.followup.send(embed=embed2)
         
     except Exception as e:
         embed = discord.Embed(
@@ -152,22 +154,15 @@ async def predict_command(ctx, ticker: str = None):
             description=f"Failed to get predictions for {ticker}.\nError: {str(e)}",
             color=discord.Color.red()
         )
-        await ctx.send(embed=embed)
+        await interaction.followup.send(embed=embed)
 
-@bot.command(name='news')
-async def news_command(ctx, ticker: str = None):
-    if not ticker:
-        embed = discord.Embed(
-            title="❌ Error",
-            description="Please provide a stock ticker.\nUsage: `$sp news <ticker>`\nExample: `$sp news AAPL`",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-    
+@bot.tree.command(name="news", description="Get recent news articles for a stock with sentiment analysis")
+@app_commands.describe(ticker="Stock ticker symbol (e.g., AAPL, TSLA, MSFT)")
+async def news_command(interaction: discord.Interaction, ticker: str):
     ticker = ticker.upper().strip()
     
-    await ctx.send(f"📰 Fetching news for {ticker}...")
+    await interaction.response.defer()
+    await interaction.followup.send(f"📰 Fetching news for {ticker}...")
     
     try:
         loop = asyncio.get_event_loop()
@@ -179,7 +174,7 @@ async def news_command(ctx, ticker: str = None):
                 description="No recent news articles found for this ticker.",
                 color=discord.Color.orange()
             )
-            await ctx.send(embed=embed)
+            await interaction.followup.send(embed=embed)
             return
         
         bullish_articles = [a for a in articles if a['sentiment'] == 'bullish']
@@ -235,7 +230,7 @@ async def news_command(ctx, ticker: str = None):
         sentiment_summary = f"🟢 {len(bullish_articles)} bullish | 🔴 {len(bearish_articles)} bearish | ⚪ {len(neutral_articles)} neutral"
         embed.set_footer(text=sentiment_summary)
         
-        await ctx.send(embed=embed)
+        await interaction.followup.send(embed=embed)
         
     except Exception as e:
         embed = discord.Embed(
@@ -243,13 +238,18 @@ async def news_command(ctx, ticker: str = None):
             description=f"Failed to fetch news for {ticker}.\nError: {str(e)}",
             color=discord.Color.red()
         )
-        await ctx.send(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 if __name__ == "__main__":
     token = os.getenv('DISCORD_BOT_TOKEN')
     if not token:
         print("Error: DISCORD_BOT_TOKEN not found in environment variables")
-        print("Please create a .env file with your Discord bot token")
+        print("For local development: Create a .env file with your Discord bot token")
+        print("For Railway: Add DISCORD_BOT_TOKEN as an environment variable in Railway dashboard")
+        print("  Go to your project → Variables → Add: DISCORD_BOT_TOKEN = your_token_here")
+        print(f"\nDebug: All env vars starting with 'DISCORD': {[k for k in os.environ.keys() if 'DISCORD' in k.upper()]}")
     else:
+        print(f"✅ Found DISCORD_BOT_TOKEN (length: {len(token)})")
+        print("Starting bot...")
         bot.run(token)
 
