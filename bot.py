@@ -37,7 +37,7 @@ async def on_ready():
     
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="/help"))
 
-@bot.tree.command(name="help", description="Display all available commands")
+@bot.tree.command(name="help", description="Display all available commands and usage information")
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="📊 Stock Predictor Bot - Commands",
@@ -62,7 +62,7 @@ async def help_command(interaction: discord.Interaction):
     embed.set_footer(text="Powered by advanced ML models and fundamental analysis")
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="predict", description="Get stock price predictions for short and long-term horizons")
+@bot.tree.command(name="predict", description="Get accurate stock price predictions with charts for short-term (1-5 days) and long-term (6-12 months)")
 @app_commands.describe(ticker="Stock ticker symbol (e.g., AAPL, TSLA, MSFT)")
 async def predict_command(interaction: discord.Interaction, ticker: str):
     ticker = ticker.upper().strip()
@@ -156,7 +156,7 @@ async def predict_command(interaction: discord.Interaction, ticker: str):
         )
         await interaction.followup.send(embed=embed)
 
-@bot.tree.command(name="news", description="Get recent news articles for a stock with sentiment analysis")
+@bot.tree.command(name="news", description="Get recent news articles for a stock with bullish/bearish sentiment analysis")
 @app_commands.describe(ticker="Stock ticker symbol (e.g., AAPL, TSLA, MSFT)")
 async def news_command(interaction: discord.Interaction, ticker: str):
     ticker = ticker.upper().strip()
