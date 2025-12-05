@@ -1101,6 +1101,9 @@ class PredictionEngine:
             shares_outstanding = info.get('sharesOutstanding', 0) or 0
             if shares_outstanding > 0 and current_price > 0:
                 market_cap = shares_outstanding * current_price
+        
+        market_cap_params = self._get_market_cap_parameters(market_cap) if market_cap > 0 else None
+        
         sector = info.get('sector', '') or ''
         industry = info.get('industry', '') or ''
         book_value = info.get('bookValue', 0) or 0
