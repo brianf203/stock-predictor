@@ -248,37 +248,31 @@ async def rules_command(ctx):
         return
     
     embed = discord.Embed(
-        title="📜 Server Rules",
-        description="Please follow these rules to maintain a respectful and productive community.",
+        title="Server Rules",
+        description="Please follow the rules below:",
         color=discord.Color.blue()
     )
     
     embed.add_field(
-        name="1️⃣ Be Respectful",
+        name="1. Be Respectful",
         value="Treat all members with respect. No harassment, hate speech, or personal attacks.",
         inline=False
     )
     
     embed.add_field(
-        name="2️⃣ No Spam",
+        name="2. No Spam",
         value="Avoid spamming commands or messages. Use the bot responsibly.",
         inline=False
     )
     
     embed.add_field(
-        name="3️⃣ Stay On Topic",
-        value="Keep discussions relevant to stocks, trading, and the bot's functionality.",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="4️⃣ No Financial Advice",
+        name="3. No Financial Advice",
         value="Remember that predictions are for informational purposes only. Do not treat them as financial advice.",
         inline=False
     )
     
     embed.add_field(
-        name="5️⃣ Follow Discord ToS",
+        name="4. Follow Discord ToS",
         value="Adhere to Discord's Terms of Service and Community Guidelines.",
         inline=False
     )
