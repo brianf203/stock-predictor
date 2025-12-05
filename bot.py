@@ -19,7 +19,9 @@ load_dotenv()
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix=None, intents=intents, help_command=None)
+bot = commands.Bot(command_prefix='$sp ', intents=intents, help_command=None)
+
+ADMIN_USER_ID = 317162216833155072
 prediction_engine = PredictionEngine()
 chart_generator = ChartGenerator()
 news_analyzer = NewsAnalyzer()
@@ -239,6 +241,107 @@ async def news_command(interaction: discord.Interaction, ticker: str):
             color=discord.Color.red()
         )
         await interaction.followup.send(embed=embed)
+
+@bot.command(name='rules')
+async def rules_command(ctx):
+    if ctx.author.id != ADMIN_USER_ID:
+        return
+    
+    embed = discord.Embed(
+        title="📜 Server Rules",
+        description="Please follow these rules to maintain a respectful and productive community.",
+        color=discord.Color.blue()
+    )
+    
+    embed.add_field(
+        name="1️⃣ Be Respectful",
+        value="Treat all members with respect. No harassment, hate speech, or personal attacks.",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="2️⃣ No Spam",
+        value="Avoid spamming commands or messages. Use the bot responsibly.",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="3️⃣ Stay On Topic",
+        value="Keep discussions relevant to stocks, trading, and the bot's functionality.",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="4️⃣ No Financial Advice",
+        value="Remember that predictions are for informational purposes only. Do not treat them as financial advice.",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="5️⃣ Follow Discord ToS",
+        value="Adhere to Discord's Terms of Service and Community Guidelines.",
+        inline=False
+    )
+    
+    embed.set_footer(text="Violations may result in warnings or removal from the server.")
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name='info')
+async def info_command(ctx):
+    if ctx.author.id != ADMIN_USER_ID:
+        return
+    
+    embed = discord.Embed(
+        title="📊 Stock Predictor Bot - Information",
+        description="An advanced AI-powered stock prediction bot using machine learning and fundamental analysis.",
+        color=discord.Color.green()
+    )
+    
+    embed.add_field(
+        name="🤖 How It Works",
+        value="The bot uses a sophisticated ensemble of prediction models:\n"
+              "• **Short-term (1-5 days)**: Technical indicators, momentum analysis, market sentiment, and price action patterns\n"
+              "• **Long-term (6-12 months)**: Fundamental analysis, DCF models, financial ratios, and valuation metrics",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📈 Commands",
+        value="`/help` - Display all available commands\n"
+              "`/predict <ticker>` - Get price predictions with charts\n"
+              "`/news <ticker>` - View recent news with sentiment analysis",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="💡 How to Use",
+        value="1. Use `/predict AAPL` to get predictions for any stock\n"
+              "2. View the chart and current price in the first embed\n"
+              "3. Check short-term and long-term predictions in the second embed\n"
+              "4. Use `/news AAPL` to see recent news articles with sentiment",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="⚠️ Important Disclaimer",
+        value="All predictions are for informational purposes only and should not be considered as financial advice. "
+              "Always do your own research and consult with a financial advisor before making investment decisions.",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🔧 Technical Details",
+        value="• Uses 5+ technical indicators for short-term predictions\n"
+              "• Implements 8+ fundamental models for long-term analysis\n"
+              "• Real-time data from Yahoo Finance\n"
+              "• Advanced sentiment analysis for news articles",
+        inline=False
+    )
+    
+    embed.set_footer(text="Powered by advanced ML models and fundamental analysis")
+    
+    await ctx.send(embed=embed)
 
 if __name__ == "__main__":
     token = os.getenv('DISCORD_BOT_TOKEN')
