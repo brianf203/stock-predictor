@@ -110,6 +110,9 @@ class PredictionEngine:
                 'key_factors': 'Insufficient data for accurate prediction'
             }
         
+        market_cap = info.get('marketCap', 0) or 0
+        market_cap_params = self._get_market_cap_parameters(market_cap)
+        
         closes = hist_data['Close'].values
         highs = hist_data['High'].values
         lows = hist_data['Low'].values
@@ -205,167 +208,342 @@ class PredictionEngine:
         
         support, resistance = self._find_support_resistance(df)
         market_regime = self._detect_market_regime(df)
-        volatility_model = self._model_volatility(df)
+        volatility_model = self._model_volatility(df, market_cap_params=market_cap_params)
         
         predictions = []
         factors = []
         confidence_scores = []
         
-        model1_pred, model1_conf, model1_factors = self._momentum_model(df, latest, prev, current_price)
+        model1_pred, model1_conf, model1_factors = self._momentum_model(df, latest, prev, current_price, market_cap_params)
         predictions.append(model1_pred)
         confidence_scores.append(model1_conf)
         factors.extend(model1_factors)
         
-        model2_pred, model2_conf, model2_factors = self._mean_reversion_model(df, latest, support, resistance, current_price)
+        model2_pred, model2_conf, model2_factors = self._mean_reversion_model(df, latest, support, resistance, current_price, market_cap_params)
         predictions.append(model2_pred)
         confidence_scores.append(model2_conf)
         factors.extend(model2_factors)
         
-        model3_pred, model3_conf, model3_factors = self._trend_following_model(df, latest, current_price, market_regime)
+        model3_pred, model3_conf, model3_factors = self._trend_following_model(df, latest, current_price, market_regime, market_cap_params)
         predictions.append(model3_pred)
         confidence_scores.append(model3_conf)
         factors.extend(model3_factors)
         
-        model4_pred, model4_conf, model4_factors = self._volume_price_model(df, latest, current_price)
+        model4_pred, model4_conf, model4_factors = self._volume_price_model(df, latest, current_price, market_cap_params)
         predictions.append(model4_pred)
         confidence_scores.append(model4_conf)
         factors.extend(model4_factors)
         
-        model5_pred, model5_conf, model5_factors = self._volatility_model(df, latest, volatility_model, current_price)
+        model5_pred, model5_conf, model5_factors = self._volatility_model(df, latest, volatility_model, current_price, market_cap_params)
         predictions.append(model5_pred)
         confidence_scores.append(model5_conf)
         factors.extend(model5_factors)
         
-        ensemble_pred = np.mean(predictions)
-        ensemble_std = np.std(predictions)
-        agreement = 1 - (ensemble_std / current_price) if current_price > 0 else 0.5
+        predictions_array = np.array(predictions)
+        confidence_array = np.array(confidence_scores)
         
-        final_confidence = min(92.0, max(45.0, np.mean(confidence_scores) * (0.7 + agreement * 0.3)))
+        confidence_weights = confidence_array / confidence_array.sum() if confidence_array.sum() > 0 else np.ones(len(predictions)) / len(predictions)
+        
+        changes = (predictions_array - current_price) / current_price
+        median_change = np.median(changes)
+        mad = np.median(np.abs(changes - median_change))
+        
+        if mad > 0:
+            z_scores = np.abs((changes - median_change) / (mad + 1e-10))
+            outlier_mask = z_scores < 2.5
+        else:
+            outlier_mask = np.ones(len(predictions), dtype=bool)
+        
+        if np.sum(outlier_mask) < 2:
+            outlier_mask = np.ones(len(predictions), dtype=bool)
+        
+        filtered_predictions = predictions_array[outlier_mask]
+        filtered_confidences = confidence_array[outlier_mask]
+        filtered_weights = confidence_weights[outlier_mask]
+        filtered_weights = filtered_weights / filtered_weights.sum() if filtered_weights.sum() > 0 else np.ones(len(filtered_predictions)) / len(filtered_predictions)
+        
+        ensemble_pred = np.average(filtered_predictions, weights=filtered_weights)
+        ensemble_median = np.median(filtered_predictions)
+        
+        ensemble_pred = ensemble_pred * 0.6 + ensemble_median * 0.4
+        
+        ensemble_std = np.std(filtered_predictions)
+        agreement = 1 - min(1.0, ensemble_std / current_price) if current_price > 0 else 0.5
+        
+        market_regime = self._detect_market_regime(df)
+        regime_weight_adjustment = self._get_regime_weights(market_regime, filtered_predictions, current_price)
+        
+        if regime_weight_adjustment is not None:
+            adjusted_weights = filtered_weights * regime_weight_adjustment
+            adjusted_weights = adjusted_weights / adjusted_weights.sum() if adjusted_weights.sum() > 0 else filtered_weights
+            ensemble_pred = np.average(filtered_predictions, weights=adjusted_weights) * 0.7 + ensemble_median * 0.3
+        else:
+            ensemble_pred = ensemble_pred * 0.6 + ensemble_median * 0.4
+        
+        monte_carlo_result = self._monte_carlo_simulation(
+            filtered_predictions, filtered_confidences, current_price, volatility_model
+        )
+        
+        if monte_carlo_result:
+            ensemble_pred = ensemble_pred * 0.75 + monte_carlo_result['mean'] * 0.25
+            ensemble_std = monte_carlo_result['std']
+        
+        avg_confidence = np.average(filtered_confidences, weights=filtered_weights)
+        
+        prediction_interval_width = ensemble_std / current_price if current_price > 0 else 0.1
+        interval_adjustment = 1 - min(0.3, prediction_interval_width * 2)
+        
+        market_cap_confidence_adjustment = market_cap_params.get('confidence_multiplier', 1.0)
+        
+        final_confidence = min(92.0, max(45.0, avg_confidence * (0.60 + agreement * 0.25 + interval_adjustment * 0.15) * market_cap_confidence_adjustment))
         
         predicted_price = ensemble_pred
         predicted_change = (predicted_price - current_price) / current_price
         
-        unique_factors = list(dict.fromkeys(factors))[:5]
+        bearish_keywords = ['oversold', 'lower', 'support', 'breakdown', 'bearish', 'death', 'downtrend', 'decline', 'distribution', 'below']
+        bullish_keywords = ['overbought', 'upper', 'resistance', 'breakout', 'bullish', 'golden', 'uptrend', 'growth', 'accumulation', 'above', 'crossover']
+        
+        bearish_factors = [f for f in factors if any(kw.lower() in f.lower() for kw in bearish_keywords)]
+        bullish_factors = [f for f in factors if any(kw.lower() in f.lower() for kw in bullish_keywords)]
+        neutral_factors = [f for f in factors if f not in bearish_factors and f not in bullish_factors]
+        
+        unique_factors_all = list(dict.fromkeys(factors))
+        unique_bearish = list(dict.fromkeys(bearish_factors))
+        unique_bullish = list(dict.fromkeys(bullish_factors))
+        unique_neutral = list(dict.fromkeys(neutral_factors))
+        
+        if predicted_change < -0.01:
+            bearish_count = min(3, len(unique_bearish))
+            bullish_count = min(2, len(unique_bullish))
+            selected_factors = unique_bearish[:bearish_count] + unique_bullish[:bullish_count]
+            if len(selected_factors) < 3 and unique_neutral:
+                selected_factors.extend(unique_neutral[:3-len(selected_factors)])
+        elif predicted_change > 0.01:
+            bullish_count = min(3, len(unique_bullish))
+            bearish_count = min(2, len(unique_bearish))
+            selected_factors = unique_bullish[:bullish_count] + unique_bearish[:bearish_count]
+            if len(selected_factors) < 3 and unique_neutral:
+                selected_factors.extend(unique_neutral[:3-len(selected_factors)])
+        else:
+            selected_factors = unique_factors_all[:5]
+        
+        if not selected_factors:
+            selected_factors = unique_factors_all[:5] if unique_factors_all else ['Multiple technical signals']
         
         return {
             'predicted_price': predicted_price,
             'change_percent': predicted_change * 100,
             'confidence': final_confidence,
-            'key_factors': ', '.join(unique_factors) if unique_factors else 'Multiple technical signals'
+            'key_factors': ', '.join(selected_factors[:5]) if selected_factors else 'Multiple technical signals'
         }
     
-    def _momentum_model(self, df: pd.DataFrame, latest: pd.Series, prev: pd.Series, current_price: float):
+    def _momentum_model(self, df: pd.DataFrame, latest: pd.Series, prev: pd.Series, current_price: float, market_cap_params: dict = None):
         score = 0
         factors = []
         confidence = 70.0
         
-        if not pd.isna(latest['RSI_14']):
-            if latest['RSI_14'] < 25:
-                score += 0.20
+        rsi_14 = latest['RSI_14'] if not pd.isna(latest['RSI_14']) else None
+        rsi_7 = latest['RSI_7'] if not pd.isna(latest['RSI_7']) else None
+        
+        if rsi_14 is not None:
+            if rsi_14 < 25:
+                score += 0.22
                 factors.append("Strongly oversold (RSI<25)")
-                confidence += 5
-            elif latest['RSI_14'] < 35:
-                score += 0.10
-                factors.append("Oversold")
-            elif latest['RSI_14'] > 75:
-                score -= 0.20
-                factors.append("Strongly overbought (RSI>75)")
-                confidence += 5
-            elif latest['RSI_14'] > 65:
-                score -= 0.10
-                factors.append("Overbought")
-        
-        if not pd.isna(latest['MACD_hist']):
-            if latest['MACD_hist'] > 0 and prev['MACD_hist'] <= 0:
-                score += 0.15
-                factors.append("MACD bullish crossover")
-                confidence += 3
-            elif latest['MACD_hist'] < 0 and prev['MACD_hist'] >= 0:
-                score -= 0.15
-                factors.append("MACD bearish crossover")
-                confidence += 3
-            elif latest['MACD_hist'] > prev['MACD_hist']:
-                score += 0.08
-            else:
-                score -= 0.08
-        
-        if not pd.isna(latest['Stoch_K']) and not pd.isna(latest['Stoch_D']):
-            if latest['Stoch_K'] < 20 and latest['Stoch_D'] < 20:
+                confidence += 6
+            elif rsi_14 < 35:
                 score += 0.12
-                factors.append("Stochastic oversold")
-            elif latest['Stoch_K'] > 80 and latest['Stoch_D'] > 80:
+                factors.append("Oversold")
+                confidence += 2
+            elif rsi_14 > 75:
+                score -= 0.22
+                factors.append("Strongly overbought (RSI>75)")
+                confidence += 6
+            elif rsi_14 > 65:
                 score -= 0.12
-                factors.append("Stochastic overbought")
+                factors.append("Overbought")
+                confidence += 2
+            
+            if rsi_7 is not None:
+                if rsi_14 < rsi_7 and rsi_14 < 40:
+                    score += 0.08
+                    factors.append("RSI divergence (bullish)")
+                elif rsi_14 > rsi_7 and rsi_14 > 60:
+                    score -= 0.08
+                    factors.append("RSI divergence (bearish)")
         
-        if not pd.isna(latest['Williams_R']):
-            if latest['Williams_R'] < -80:
+        macd_hist = latest['MACD_hist'] if not pd.isna(latest['MACD_hist']) else None
+        prev_macd_hist = prev['MACD_hist'] if not pd.isna(prev['MACD_hist']) else None
+        
+        if macd_hist is not None and prev_macd_hist is not None:
+            if macd_hist > 0 and prev_macd_hist <= 0:
+                score += 0.18
+                factors.append("MACD bullish crossover")
+                confidence += 4
+            elif macd_hist < 0 and prev_macd_hist >= 0:
+                score -= 0.18
+                factors.append("MACD bearish crossover")
+                confidence += 4
+            elif macd_hist > prev_macd_hist * 1.2:
                 score += 0.10
-                factors.append("Williams %R oversold")
-            elif latest['Williams_R'] > -20:
+                factors.append("MACD momentum accelerating")
+            elif macd_hist < prev_macd_hist * 0.8:
                 score -= 0.10
+                factors.append("MACD momentum decelerating")
+        
+        macd = latest['MACD'] if not pd.isna(latest['MACD']) else None
+        macd_signal = latest['MACD_signal'] if not pd.isna(latest['MACD_signal']) else None
+        if macd is not None and macd_signal is not None:
+            if macd > macd_signal * 1.05:
+                score += 0.05
+            elif macd < macd_signal * 0.95:
+                score -= 0.05
+        
+        stoch_k = latest['Stoch_K'] if not pd.isna(latest['Stoch_K']) else None
+        stoch_d = latest['Stoch_D'] if not pd.isna(latest['Stoch_D']) else None
+        
+        if stoch_k is not None and stoch_d is not None:
+            if stoch_k < 20 and stoch_d < 20:
+                score += 0.14
+                factors.append("Stochastic oversold")
+                confidence += 2
+            elif stoch_k > 80 and stoch_d > 80:
+                score -= 0.14
+                factors.append("Stochastic overbought")
+                confidence += 2
+            elif stoch_k > stoch_d and stoch_k < 50:
+                score += 0.06
+            elif stoch_k < stoch_d and stoch_k > 50:
+                score -= 0.06
+        
+        williams_r = latest['Williams_R'] if not pd.isna(latest['Williams_R']) else None
+        if williams_r is not None:
+            if williams_r < -80:
+                score += 0.12
+                factors.append("Williams %R oversold")
+            elif williams_r > -20:
+                score -= 0.12
                 factors.append("Williams %R overbought")
         
-        if not pd.isna(latest['ROC']):
-            if latest['ROC'] > 5:
-                score += 0.08
-            elif latest['ROC'] < -5:
-                score -= 0.08
+        roc = latest['ROC'] if not pd.isna(latest['ROC']) else None
+        if roc is not None:
+            if roc > 5:
+                score += 0.10
+                factors.append("Strong momentum (ROC>5%)")
+            elif roc < -5:
+                score -= 0.10
+                factors.append("Weak momentum (ROC<-5%)")
         
-        predicted_change = score * 0.025
+        price_momentum_5 = (df['Close'].iloc[-1] / df['Close'].iloc[-6] - 1) if len(df) >= 6 else 0
+        price_momentum_10 = (df['Close'].iloc[-1] / df['Close'].iloc[-11] - 1) if len(df) >= 11 else 0
+        
+        if price_momentum_5 > 0.03 and price_momentum_10 > 0.05:
+            score += 0.12
+            factors.append("Multi-timeframe momentum")
+            confidence += 3
+        elif price_momentum_5 < -0.03 and price_momentum_10 < -0.05:
+            score -= 0.12
+            factors.append("Multi-timeframe weakness")
+            confidence += 3
+        
+        predicted_change = score * 0.022
         predicted_price = current_price * (1 + predicted_change)
         
         return predicted_price, confidence, factors
     
-    def _mean_reversion_model(self, df: pd.DataFrame, latest: pd.Series, support: float, resistance: float, current_price: float):
+    def _mean_reversion_model(self, df: pd.DataFrame, latest: pd.Series, support: float, resistance: float, current_price: float, market_cap_params: dict = None):
         score = 0
         factors = []
         confidence = 65.0
         
         bb_position = (latest['Close'] - latest['BB_lower']) / (latest['BB_upper'] - latest['BB_lower']) if not pd.isna(latest['BB_upper']) and latest['BB_upper'] != latest['BB_lower'] else 0.5
         
-        if bb_position < 0.1:
-            score += 0.25
-            factors.append("Extreme lower Bollinger Band")
-            confidence += 8
-        elif bb_position < 0.2:
-            score += 0.15
-            factors.append("Near lower Bollinger Band")
-        elif bb_position > 0.9:
-            score -= 0.25
-            factors.append("Extreme upper Bollinger Band")
-            confidence += 8
-        elif bb_position > 0.8:
-            score -= 0.15
-            factors.append("Near upper Bollinger Band")
+        bb_width = latest['BB_width'] if not pd.isna(latest['BB_width']) else 0.05
         
-        if support > 0 and current_price <= support * 1.02:
-            score += 0.20
-            factors.append(f"Near support ${support:.2f}")
+        if bb_position < 0.1:
+            reversion_strength = 0.28
+            factors.append("Extreme lower Bollinger Band")
+            confidence += 10
+        elif bb_position < 0.2:
+            reversion_strength = 0.18
+            factors.append("Near lower Bollinger Band")
             confidence += 5
-        elif resistance > 0 and current_price >= resistance * 0.98:
-            score -= 0.20
-            factors.append(f"Near resistance ${resistance:.2f}")
+        elif bb_position > 0.9:
+            reversion_strength = -0.28
+            factors.append("Extreme upper Bollinger Band")
+            confidence += 10
+        elif bb_position > 0.8:
+            reversion_strength = -0.18
+            factors.append("Near upper Bollinger Band")
             confidence += 5
+        else:
+            reversion_strength = 0
+        
+        if bb_width > 0.08:
+            reversion_strength *= 0.7
+        
+        score += reversion_strength
+        
+        if support > 0:
+            distance_to_support = (current_price - support) / support
+            if -0.03 <= distance_to_support <= 0.02:
+                support_strength = min(0.22, abs(distance_to_support) * 10)
+                score += support_strength
+                factors.append(f"Near support ${support:.2f}")
+                confidence += 6
+            elif distance_to_support < -0.03:
+                score += 0.15
+                factors.append(f"Below support ${support:.2f}")
+        
+        if resistance > 0:
+            distance_to_resistance = (resistance - current_price) / current_price
+            if -0.02 <= distance_to_resistance <= 0.03:
+                resistance_strength = min(0.22, abs(distance_to_resistance) * 10)
+                score -= resistance_strength
+                factors.append(f"Near resistance ${resistance:.2f}")
+                confidence += 6
+            elif distance_to_resistance < -0.02:
+                score -= 0.15
+                factors.append(f"Above resistance ${resistance:.2f}")
         
         kc_position = (latest['Close'] - latest['KC_lower']) / (latest['KC_upper'] - latest['KC_lower']) if not pd.isna(latest['KC_upper']) and latest['KC_upper'] != latest['KC_lower'] else 0.5
         
         if kc_position < 0.2:
-            score += 0.12
+            score += 0.10
+            factors.append("Keltner Channel oversold")
         elif kc_position > 0.8:
-            score -= 0.12
+            score -= 0.10
+            factors.append("Keltner Channel overbought")
         
         if not pd.isna(latest['EMA_20']):
             distance_from_ema = (current_price - latest['EMA_20']) / latest['EMA_20']
             if abs(distance_from_ema) > 0.05:
-                score += np.sign(-distance_from_ema) * 0.10
+                mean_reversion_signal = np.sign(-distance_from_ema) * min(0.12, abs(distance_from_ema) * 2)
+                score += mean_reversion_signal
                 factors.append("Price deviation from EMA(20)")
         
-        predicted_change = score * 0.02
+        if not pd.isna(latest['SMA_50']):
+            distance_from_sma = (current_price - latest['SMA_50']) / latest['SMA_50']
+            if abs(distance_from_sma) > 0.08:
+                mean_reversion_signal = np.sign(-distance_from_sma) * min(0.10, abs(distance_from_sma) * 1.5)
+                score += mean_reversion_signal
+                factors.append("Price deviation from SMA(50)")
+        
+        base_change = score * 0.018
+        
+        if market_cap_params:
+            volatility_mult = market_cap_params.get('volatility_multiplier', 1.0)
+            base_change *= volatility_mult
+            if market_cap_params.get('category') in ['mega', 'large']:
+                base_change *= 0.9
+            elif market_cap_params.get('category') in ['small', 'micro']:
+                base_change *= 1.1
+        
+        predicted_change = base_change
         predicted_price = current_price * (1 + predicted_change)
         
         return predicted_price, confidence, factors
     
-    def _trend_following_model(self, df: pd.DataFrame, latest: pd.Series, current_price: float, market_regime: str):
+    def _trend_following_model(self, df: pd.DataFrame, latest: pd.Series, current_price: float, market_regime: str, market_cap_params: dict = None):
         score = 0
         factors = []
         confidence = 75.0
@@ -428,12 +606,21 @@ class PredictionEngine:
                     score -= 0.10
                     factors.append("Ichimoku bearish")
         
-        predicted_change = score * 0.03
+        base_change = score * 0.03
+        
+        if market_cap_params:
+            market_correlation = market_cap_params.get('market_correlation', 0.70)
+            if market_regime == 'bull' or market_regime == 'bear':
+                base_change *= (0.6 + market_correlation * 0.4)
+            else:
+                base_change *= (0.8 + market_correlation * 0.2)
+        
+        predicted_change = base_change
         predicted_price = current_price * (1 + predicted_change)
         
         return predicted_price, confidence, factors
     
-    def _volume_price_model(self, df: pd.DataFrame, latest: pd.Series, current_price: float):
+    def _volume_price_model(self, df: pd.DataFrame, latest: pd.Series, current_price: float, market_cap_params: dict = None):
         score = 0
         factors = []
         confidence = 68.0
@@ -488,50 +675,99 @@ class PredictionEngine:
                 factors.append("High volume breakdown")
                 confidence += 3
         
-        predicted_change = score * 0.022
+        base_change = score * 0.022
+        
+        if market_cap_params:
+            liquidity_factor = market_cap_params.get('liquidity_factor', 1.0)
+            base_change *= liquidity_factor
+        
+        predicted_change = base_change
         predicted_price = current_price * (1 + predicted_change)
         
         return predicted_price, confidence, factors
     
-    def _volatility_model(self, df: pd.DataFrame, latest: pd.Series, volatility_params: dict, current_price: float):
+    def _volatility_model(self, df: pd.DataFrame, latest: pd.Series, volatility_params: dict, current_price: float, market_cap_params: dict = None):
         score = 0
         factors = []
         confidence = 72.0
+        
+        recent_returns = df['Close'].pct_change().iloc[-5:].dropna()
+        if len(recent_returns) > 0:
+            recent_vol = recent_returns.std() * np.sqrt(252)
+            if recent_vol > 0.5:
+                score -= 0.15
+                factors.append("Extreme recent volatility")
+                confidence -= 5
+            elif recent_vol < 0.10:
+                confidence += 3
+                factors.append("Low recent volatility")
         
         if not pd.isna(latest['ATR']):
             atr_pct = latest['ATR'] / current_price if current_price > 0 else 0
             if atr_pct > 0.04:
                 factors.append("High volatility (ATR>4%)")
-                score *= 0.85
+                score -= 0.10
+                confidence -= 3
             elif atr_pct < 0.01:
                 factors.append("Low volatility (ATR<1%)")
                 confidence += 3
         
-        if 'realized_vol' in volatility_params:
+        if 'realized_vol' in volatility_params and 'garch_vol' in volatility_params:
             rv = volatility_params['realized_vol']
+            garch_vol = volatility_params['garch_vol']
+            
+            if garch_vol > rv * 1.2:
+                factors.append("Volatility clustering (GARCH>realized)")
+                score -= 0.08
+            elif garch_vol < rv * 0.8:
+                factors.append("Volatility mean reversion")
+                confidence += 2
+            
             if rv > 0.4:
                 factors.append("Extreme volatility")
-                score *= 0.80
+                score -= 0.12
+                confidence -= 4
             elif rv < 0.15:
+                confidence += 2
+        
+        if 'volatility_cluster' in volatility_params:
+            cluster = volatility_params['volatility_cluster']
+            if cluster > 1.5:
+                factors.append("High volatility cluster")
+                score -= 0.10
+                confidence -= 3
+            elif cluster < 0.7:
+                factors.append("Low volatility cluster")
                 confidence += 2
         
         if 'volatility_regime' in volatility_params:
             if volatility_params['volatility_regime'] == 'high':
-                score *= 0.90
+                score -= 0.08
                 factors.append("High volatility regime")
+                confidence -= 2
             elif volatility_params['volatility_regime'] == 'low':
                 confidence += 3
                 factors.append("Low volatility regime")
         
         bb_width = latest['BB_width'] if not pd.isna(latest['BB_width']) else 0.05
         if bb_width > 0.1:
-            factors.append("Wide Bollinger Bands - high volatility")
-            score *= 0.88
+            factors.append("Wide Bollinger Bands")
+            score -= 0.05
         elif bb_width < 0.03:
-            factors.append("Narrow Bollinger Bands - low volatility")
+            factors.append("Narrow Bollinger Bands")
             confidence += 2
         
-        predicted_change = score * 0.018 if score != 0 else 0
+        trend = df['Close'].iloc[-1] / df['Close'].iloc[-5] - 1 if len(df) >= 5 else 0
+        volatility_adjusted_trend = trend / (volatility_params.get('realized_vol', 0.2) + 0.1)
+        
+        if volatility_adjusted_trend > 0.1:
+            score += 0.10
+            factors.append("Strong risk-adjusted momentum")
+        elif volatility_adjusted_trend < -0.1:
+            score -= 0.10
+            factors.append("Weak risk-adjusted momentum")
+        
+        predicted_change = score * 0.015
         predicted_price = current_price * (1 + predicted_change)
         
         return predicted_price, confidence, factors
@@ -541,24 +777,44 @@ class PredictionEngine:
         if len(closes) < window * 2:
             return 0, 0
         
-        recent_closes = closes[-window*2:]
-        highs = df['High'].values[-window*2:]
-        lows = df['Low'].values[-window*2:]
+        recent_closes = closes[-window*3:]
+        highs = df['High'].values[-window*3:]
+        lows = df['Low'].values[-window*3:]
         
         support_levels = []
         resistance_levels = []
+        support_strength = []
+        resistance_strength = []
         
-        for i in range(window, len(recent_closes) - window):
-            local_min = np.min(lows[i-window:i+window])
-            local_max = np.max(highs[i-window:i+window])
+        pivot_window = max(5, window // 4)
+        
+        for i in range(pivot_window, len(recent_closes) - pivot_window):
+            local_min = np.min(lows[i-pivot_window:i+pivot_window])
+            local_max = np.max(highs[i-pivot_window:i+pivot_window])
             
-            if lows[i] <= local_min * 1.01:
+            if lows[i] <= local_min * 1.005:
                 support_levels.append(lows[i])
-            if highs[i] >= local_max * 0.99:
+                touches = np.sum((lows[max(0, i-window):min(len(lows), i+window)] <= lows[i] * 1.02) & 
+                               (lows[max(0, i-window):min(len(lows), i+window)] >= lows[i] * 0.98))
+                support_strength.append(touches)
+            
+            if highs[i] >= local_max * 0.995:
                 resistance_levels.append(highs[i])
+                touches = np.sum((highs[max(0, i-window):min(len(highs), i+window)] >= highs[i] * 0.98) & 
+                               (highs[max(0, i-window):min(len(highs), i+window)] <= highs[i] * 1.02))
+                resistance_strength.append(touches)
         
-        support = np.median(support_levels) if support_levels else np.min(lows[-window:])
-        resistance = np.median(resistance_levels) if resistance_levels else np.max(highs[-window:])
+        if support_levels and support_strength:
+            weighted_support = np.average(support_levels, weights=support_strength)
+            support = weighted_support
+        else:
+            support = np.min(lows[-window:])
+        
+        if resistance_levels and resistance_strength:
+            weighted_resistance = np.average(resistance_levels, weights=resistance_strength)
+            resistance = weighted_resistance
+        else:
+            resistance = np.max(highs[-window:])
         
         return support, resistance
     
@@ -584,10 +840,62 @@ class PredictionEngine:
         
         return 'neutral'
     
-    def _model_volatility(self, df: pd.DataFrame, window: int = 20):
+    def _get_market_cap_parameters(self, market_cap: float):
+        if market_cap >= 200_000_000_000:
+            return {
+                'category': 'mega',
+                'volatility_multiplier': 0.75,
+                'beta_adjustment': 0.85,
+                'market_correlation': 0.85,
+                'confidence_multiplier': 1.10,
+                'prediction_stability': 1.15,
+                'liquidity_factor': 1.20
+            }
+        elif market_cap >= 10_000_000_000:
+            return {
+                'category': 'large',
+                'volatility_multiplier': 0.85,
+                'beta_adjustment': 0.92,
+                'market_correlation': 0.80,
+                'confidence_multiplier': 1.05,
+                'prediction_stability': 1.08,
+                'liquidity_factor': 1.10
+            }
+        elif market_cap >= 2_000_000_000:
+            return {
+                'category': 'mid',
+                'volatility_multiplier': 1.0,
+                'beta_adjustment': 1.0,
+                'market_correlation': 0.70,
+                'confidence_multiplier': 1.0,
+                'prediction_stability': 1.0,
+                'liquidity_factor': 1.0
+            }
+        elif market_cap >= 300_000_000:
+            return {
+                'category': 'small',
+                'volatility_multiplier': 1.25,
+                'beta_adjustment': 1.15,
+                'market_correlation': 0.55,
+                'confidence_multiplier': 0.90,
+                'prediction_stability': 0.85,
+                'liquidity_factor': 0.80
+            }
+        else:
+            return {
+                'category': 'micro',
+                'volatility_multiplier': 1.50,
+                'beta_adjustment': 1.30,
+                'market_correlation': 0.40,
+                'confidence_multiplier': 0.80,
+                'prediction_stability': 0.70,
+                'liquidity_factor': 0.65
+            }
+    
+    def _model_volatility(self, df: pd.DataFrame, window: int = 20, market_cap_params: dict = None):
         returns = df['Close'].pct_change().dropna()
         if len(returns) < window:
-            return {'realized_vol': 0.2, 'volatility_regime': 'neutral'}
+            return {'realized_vol': 0.2, 'volatility_regime': 'neutral', 'volatility_cluster': 1.0, 'garch_vol': 0.2, 'long_term_vol': 0.2}
         
         recent_returns = returns.iloc[-window:]
         realized_vol = recent_returns.std() * np.sqrt(252)
@@ -599,10 +907,130 @@ class PredictionEngine:
         else:
             regime = 'normal'
         
+        long_term_returns = returns.iloc[-min(252, len(returns)):]
+        long_term_vol = long_term_returns.std() * np.sqrt(252)
+        
+        volatility_cluster = realized_vol / long_term_vol if long_term_vol > 0 else 1.0
+        
+        squared_returns = recent_returns ** 2
+        if len(squared_returns) >= 5:
+            alpha = 0.1
+            beta = 0.85
+            omega = long_term_vol ** 2 * (1 - alpha - beta) if long_term_vol > 0 else 0.04
+            
+            garch_var = omega
+            for ret_sq in squared_returns.iloc[-5:]:
+                garch_var = omega + alpha * ret_sq + beta * garch_var
+            
+            garch_vol = np.sqrt(garch_var * 252) if garch_var > 0 else realized_vol
+        else:
+            garch_vol = realized_vol
+        
         return {
             'realized_vol': realized_vol,
-            'volatility_regime': regime
+            'volatility_regime': regime,
+            'volatility_cluster': volatility_cluster,
+            'garch_vol': garch_vol,
+            'long_term_vol': long_term_vol
         }
+    
+    def _monte_carlo_simulation(self, predictions: np.ndarray, confidences: np.ndarray, 
+                                current_price: float, volatility_params: dict, n_simulations: int = 1000):
+        if len(predictions) < 2:
+            return None
+        
+        try:
+            mean_pred = np.mean(predictions)
+            std_pred = np.std(predictions)
+            
+            realized_vol = volatility_params.get('realized_vol', 0.2)
+            garch_vol = volatility_params.get('garch_vol', realized_vol)
+            
+            vol_to_use = (realized_vol + garch_vol) / 2
+            
+            confidence_weight = np.mean(confidences) / 100.0
+            
+            simulations = []
+            for _ in range(n_simulations):
+                random_shock = np.random.normal(0, vol_to_use / np.sqrt(252) * np.sqrt(5))
+                weighted_pred = np.random.choice(predictions, p=confidences/confidences.sum())
+                simulated_price = weighted_pred * (1 + random_shock * confidence_weight)
+                simulations.append(simulated_price)
+            
+            simulations = np.array(simulations)
+            simulations = simulations[(simulations > current_price * 0.5) & (simulations < current_price * 2.0)]
+            
+            if len(simulations) > 100:
+                return {
+                    'mean': np.mean(simulations),
+                    'std': np.std(simulations),
+                    'percentile_5': np.percentile(simulations, 5),
+                    'percentile_95': np.percentile(simulations, 95)
+                }
+        except Exception:
+            pass
+        
+        return None
+    
+    def _monte_carlo_simulation_long_term(self, predictions: np.ndarray, confidences: np.ndarray,
+                                         current_price: float, annual_return: float, volatility: float,
+                                         n_simulations: int = 500):
+        if len(predictions) < 2:
+            return None
+        
+        try:
+            mean_pred = np.mean(predictions)
+            std_pred = np.std(predictions)
+            
+            vol_to_use = max(volatility, 0.15)
+            confidence_weight = np.mean(confidences) / 100.0
+            
+            simulations = []
+            for _ in range(n_simulations):
+                months_ahead = 9
+                random_shock = np.random.normal(annual_return / 12, vol_to_use / np.sqrt(12))
+                weighted_pred = np.random.choice(predictions, p=confidences/confidences.sum())
+                
+                monthly_returns = []
+                for _ in range(months_ahead):
+                    monthly_return = random_shock + np.random.normal(0, vol_to_use / np.sqrt(12) * 0.5)
+                    monthly_returns.append(monthly_return)
+                
+                cumulative_return = np.prod([1 + r for r in monthly_returns])
+                simulated_price = weighted_pred * cumulative_return * confidence_weight + weighted_pred * (1 - confidence_weight)
+                simulations.append(simulated_price)
+            
+            simulations = np.array(simulations)
+            simulations = simulations[(simulations > current_price * 0.3) & (simulations < current_price * 3.0)]
+            
+            if len(simulations) > 50:
+                return {
+                    'mean': np.mean(simulations),
+                    'std': np.std(simulations),
+                    'percentile_5': np.percentile(simulations, 5),
+                    'percentile_95': np.percentile(simulations, 95)
+                }
+        except Exception:
+            pass
+        
+        return None
+    
+    def _get_regime_weights(self, market_regime: str, predictions: np.ndarray, current_price: float):
+        if len(predictions) < 3:
+            return None
+        
+        changes = (predictions - current_price) / current_price
+        
+        if market_regime == 'bull':
+            bullish_models = (changes > 0).astype(float)
+            weights = bullish_models * 1.3 + (1 - bullish_models) * 0.7
+        elif market_regime == 'bear':
+            bearish_models = (changes < 0).astype(float)
+            weights = bearish_models * 1.3 + (1 - bearish_models) * 0.7
+        else:
+            return None
+        
+        return weights / weights.sum() if weights.sum() > 0 else None
     
     def _predict_long_term_advanced(self, hist_data: pd.DataFrame, current_price: float, info: dict, stock):
         if len(hist_data) < 252:
@@ -637,10 +1065,11 @@ class PredictionEngine:
         pe_ratio = info.get('trailingPE', 0) or info.get('forwardPE', 0) or 0
         peg_ratio = info.get('pegRatio', 0) or 0
         roe = info.get('returnOnEquity', 0) or 0
+        roe_original = roe
         if roe and abs(roe) > 2.0:
             roe = roe / 100.0
         elif roe and abs(roe) > 1.0 and abs(roe) <= 2.0:
-            pass
+            roe = roe / 100.0
         elif roe and abs(roe) <= 1.0:
             pass
         
@@ -803,18 +1232,59 @@ class PredictionEngine:
         
         agreement = 1 - min(1.0, ensemble_std / current_price) if current_price > 0 else 0.5
         
-        final_confidence = min(88.0, max(40.0, np.mean(filtered_confidences) * (0.75 + agreement * 0.25)))
+        annual_return = (closes[-1] / closes[-252]) ** (1/1) - 1 if len(closes) >= 252 else 0
+        volatility = closes[-252:].std() / closes[-252:].mean() if len(closes) >= 252 else 0.2
+        
+        long_term_monte_carlo = self._monte_carlo_simulation_long_term(
+            filtered_predictions, filtered_confidences, current_price, annual_return, volatility
+        )
+        
+        if long_term_monte_carlo:
+            weighted_pred = weighted_pred * 0.8 + long_term_monte_carlo['mean'] * 0.2
+            ensemble_std = long_term_monte_carlo['std']
+        
+        prediction_interval_width = ensemble_std / current_price if current_price > 0 else 0.15
+        interval_adjustment = 1 - min(0.25, prediction_interval_width * 1.5)
+        
+        market_cap_confidence_adjustment = market_cap_params.get('confidence_multiplier', 1.0) if market_cap_params else 1.0
+        
+        final_confidence = min(88.0, max(40.0, np.mean(filtered_confidences) * (0.70 + agreement * 0.20 + interval_adjustment * 0.10) * market_cap_confidence_adjustment))
         
         predicted_price = weighted_pred
         predicted_change = (predicted_price - current_price) / current_price
         
-        unique_factors = list(dict.fromkeys(factors))[:5]
+        unique_factors = list(dict.fromkeys(factors))
+        
+        bearish_keywords = ['decline', 'declining', 'High P/E', 'Overvalued', 'Poor', 'Low', 'Weak', 'Thin', 'High debt', 'Low liquidity', 'Poor liquidity', 'Negative', 'contraction', 'decrease', 'deteriorating']
+        bullish_keywords = ['growth', 'Strong', 'Exceptional', 'Excellent', 'Good', 'Undervalued', 'Reasonable', 'High ROE', 'Strong ROA', 'High margins', 'Good margins', 'positive', 'improving', 'increase']
+        
+        bearish_factors = [f for f in unique_factors if any(kw.lower() in f.lower() for kw in bearish_keywords)]
+        bullish_factors = [f for f in unique_factors if any(kw.lower() in f.lower() for kw in bullish_keywords)]
+        neutral_factors = [f for f in unique_factors if f not in bearish_factors and f not in bullish_factors]
+        
+        if predicted_change < -0.01:
+            bearish_count = min(3, len(bearish_factors))
+            bullish_count = min(2, len(bullish_factors))
+            selected_factors = bearish_factors[:bearish_count] + bullish_factors[:bullish_count]
+            if len(selected_factors) < 3 and neutral_factors:
+                selected_factors.extend(neutral_factors[:3-len(selected_factors)])
+        elif predicted_change > 0.01:
+            bullish_count = min(3, len(bullish_factors))
+            bearish_count = min(2, len(bearish_factors))
+            selected_factors = bullish_factors[:bullish_count] + bearish_factors[:bearish_count]
+            if len(selected_factors) < 3 and neutral_factors:
+                selected_factors.extend(neutral_factors[:3-len(selected_factors)])
+        else:
+            selected_factors = unique_factors[:5]
+        
+        if not selected_factors:
+            selected_factors = unique_factors[:5] if unique_factors else ['Multiple fundamental signals']
         
         return {
             'predicted_price': predicted_price,
             'change_percent': predicted_change * 100,
             'confidence': final_confidence,
-            'key_factors': ', '.join(unique_factors) if unique_factors else 'Multiple fundamental signals'
+            'key_factors': ', '.join(selected_factors[:5]) if selected_factors else 'Multiple fundamental signals'
         }
     
     def _fundamental_model(self, earnings_growth, revenue_growth, pe_ratio, peg_ratio, 
@@ -883,12 +1353,13 @@ class PredictionEngine:
             factors.append(f"Poor PEG ({peg_ratio:.2f})")
             confidence += 3
         
-        roe_display = roe * 100 if roe <= 1.0 else roe
-        if roe > 1.5 or (roe > 0.20 and roe <= 1.0):
+        roe_display = roe * 100
+        
+        if roe > 0.20:
             score += 0.20
             factors.append(f"Exceptional ROE ({roe_display:.1f}%)")
             confidence += 5
-        elif roe > 1.0 or (roe > 0.15 and roe <= 1.0):
+        elif roe > 0.15:
             score += 0.15
             factors.append(f"High ROE ({roe_display:.1f}%)")
             confidence += 3
@@ -924,12 +1395,13 @@ class PredictionEngine:
             score -= 0.10
             factors.append(f"Weak operating margin ({operating_margin*100:.1f}%)")
         
+        market_cap_params = self._get_market_cap_parameters(market_cap) if market_cap > 0 else None
+        
         market_cap_adjustment = 1.0
-        if market_cap > 0:
-            if market_cap > 200_000_000_000:
-                market_cap_adjustment = 0.85
-            elif market_cap < 2_000_000_000:
-                market_cap_adjustment = 1.15
+        if market_cap_params:
+            volatility_mult = market_cap_params.get('volatility_multiplier', 1.0)
+            beta_adj = market_cap_params.get('beta_adjustment', 1.0)
+            market_cap_adjustment = (volatility_mult + beta_adj) / 2
         
         score = max(-1.0, min(1.0, score))
         if abs(score) > 0.6:
@@ -940,8 +1412,12 @@ class PredictionEngine:
             base_multiplier = 0.14
         else:
             base_multiplier = 0.12
+        
         predicted_change = score * base_multiplier * market_cap_adjustment
         predicted_price = current_price * (1 + predicted_change)
+        
+        if market_cap_params:
+            confidence *= market_cap_params.get('confidence_multiplier', 1.0)
         
         return predicted_price, confidence, factors
     
@@ -987,8 +1463,13 @@ class PredictionEngine:
             if revenue_growth and abs(revenue_growth) > 1.0:
                 revenue_growth = revenue_growth / 100.0
             
-            growth_rate = max(earnings_growth, revenue_growth, annual_return * 0.6, 0.02)
-            growth_rate = max(-0.10, min(0.15, growth_rate))
+            base_growth = max(earnings_growth, revenue_growth, annual_return * 0.5, 0.02)
+            
+            roe_factor = roe if roe > 0 else 0.10
+            sustainable_growth = min(roe_factor * 0.7, 0.15)
+            
+            growth_rate = min(base_growth, sustainable_growth)
+            growth_rate = max(-0.10, min(0.20, growth_rate))
             
             roe = info.get('returnOnEquity', 0.10) or 0.10
             if roe and abs(roe) > 2.0:
@@ -1009,17 +1490,29 @@ class PredictionEngine:
             else:
                 wacc = cost_of_equity
             
-            discount_rate = max(0.08, min(0.15, wacc))
+            discount_rate = max(0.08, min(0.18, wacc))
             
-            terminal_growth = min(0.04, max(0.02, growth_rate * 0.5))
+            terminal_growth = min(0.04, max(0.015, growth_rate * 0.4))
+            if terminal_growth >= discount_rate:
+                terminal_growth = discount_rate - 0.01
+            
             projection_years = 10
             
             pv_fcf = 0
+            current_fcf = fcf_per_share
+            
             for year in range(1, projection_years + 1):
-                year_growth = growth_rate * (1 - (year / projection_years) * 0.5)
-                year_growth = max(terminal_growth, year_growth)
-                future_fcf = fcf_per_share * ((1 + year_growth) ** year)
+                decay_factor = 1 - (year / projection_years) * 0.6
+                year_growth = growth_rate * decay_factor
+                year_growth = max(terminal_growth, min(growth_rate, year_growth))
+                
+                if year == 1:
+                    future_fcf = current_fcf * (1 + year_growth)
+                else:
+                    future_fcf = current_fcf * ((1 + year_growth) ** year)
+                
                 pv_fcf += future_fcf / ((1 + discount_rate) ** year)
+                current_fcf = future_fcf
             
             terminal_fcf = fcf_per_share * ((1 + growth_rate) ** projection_years) * (1 + terminal_growth)
             

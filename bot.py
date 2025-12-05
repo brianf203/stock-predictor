@@ -168,7 +168,7 @@ async def news_command(interaction: discord.Interaction, ticker: str):
     
     try:
         loop = asyncio.get_event_loop()
-        articles = await loop.run_in_executor(None, news_analyzer.get_news, ticker, 10)
+        articles = await loop.run_in_executor(None, news_analyzer.get_news, ticker, 6)
         
         if not articles:
             embed = discord.Embed(
