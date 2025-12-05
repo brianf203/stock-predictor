@@ -111,7 +111,13 @@ class PredictionEngine:
             }
         
         market_cap = info.get('marketCap', 0) or 0
-        market_cap_params = self._get_market_cap_parameters(market_cap)
+        if market_cap == 0:
+            shares_outstanding = info.get('sharesOutstanding', 0) or 0
+            current_price_val = info.get('currentPrice', 0) or info.get('regularMarketPrice', 0) or current_price
+            if shares_outstanding > 0 and current_price_val > 0:
+                market_cap = shares_outstanding * current_price_val
+        
+        market_cap_params = self._get_market_cap_parameters(market_cap) if market_cap > 0 else None
         
         closes = hist_data['Close'].values
         highs = hist_data['High'].values
@@ -293,7 +299,7 @@ class PredictionEngine:
         prediction_interval_width = ensemble_std / current_price if current_price > 0 else 0.1
         interval_adjustment = 1 - min(0.3, prediction_interval_width * 2)
         
-        market_cap_confidence_adjustment = market_cap_params.get('confidence_multiplier', 1.0)
+        market_cap_confidence_adjustment = market_cap_params.get('confidence_multiplier', 1.0) if market_cap_params else 1.0
         
         final_confidence = min(92.0, max(45.0, avg_confidence * (0.60 + agreement * 0.25 + interval_adjustment * 0.15) * market_cap_confidence_adjustment))
         
@@ -1091,6 +1097,10 @@ class PredictionEngine:
         dividend_yield = info.get('dividendYield', 0) or 0
         payout_ratio = info.get('payoutRatio', 0) or 0
         market_cap = info.get('marketCap', 0) or 0
+        if market_cap == 0:
+            shares_outstanding = info.get('sharesOutstanding', 0) or 0
+            if shares_outstanding > 0 and current_price > 0:
+                market_cap = shares_outstanding * current_price
         sector = info.get('sector', '') or ''
         industry = info.get('industry', '') or ''
         book_value = info.get('bookValue', 0) or 0
