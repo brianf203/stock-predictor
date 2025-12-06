@@ -357,9 +357,8 @@ async def changelog_v1(ctx):
         inline=False
     )
     
-    # Set author with name (icon_url requires a full accessible URL)
-    # To add an icon later, upload author.jpg to a hosting service (e.g., imgur, Discord CDN) and add: icon_url="your_url_here"
-    embed.set_author(name="brian")
+    # Set author with name and icon
+    embed.set_author(name="brian", icon_url="https://static.wikia.nocookie.net/christmasspecials/images/1/13/Snoopy_looking_at_the_tree.jpg/revision/latest?cb=20121205202731")
     
     await ctx.send(embed=embed)
 
@@ -371,8 +370,7 @@ async def invite_command(ctx):
     embed = discord.Embed(
         title="Invite Stock Predictor Bot",
         description="Invite this bot to your server!",
-        color=discord.Color.green(),
-        url="https://discord.com/oauth2/authorize?client_id=1443395790620987554&permissions=2147862528&integration_type=0&scope=bot+applications.commands"
+        color=discord.Color.green()
     )
     
     embed.add_field(
