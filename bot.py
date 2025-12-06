@@ -357,8 +357,8 @@ async def changelog_v1(ctx):
         inline=False
     )
     
-    # Set author with name and icon
-    embed.set_author(name="brian", icon_url="https://imgur.com/a/W3of0Zw")
+    # Set footer with author name and icon (at the bottom of the embed)
+    embed.set_footer(text="brian", icon_url="https://imgur.com/a/W3of0Zw")
     
     await ctx.send(embed=embed)
 
