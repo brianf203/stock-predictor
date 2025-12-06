@@ -64,7 +64,7 @@ async def help_command(interaction: discord.Interaction):
     embed.set_footer(text="Powered by advanced ML models and fundamental analysis")
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="predict", description="Get stock price predictions with charts for short-term and long-term horizons")
+@bot.tree.command(name="predict", description="Get accurate stock price predictions with charts for short-term (1-5 days) and long-term (6-12 months)")
 @app_commands.describe(ticker="Stock ticker symbol (e.g., AAPL, TSLA, MSFT)")
 async def predict_command(interaction: discord.Interaction, ticker: str):
     ticker = ticker.upper().strip()
