@@ -358,7 +358,7 @@ async def changelog_v1(ctx):
     )
     
     # Set author with name and icon
-    embed.set_author(name="brian", icon_url="https://static.wikia.nocookie.net/christmasspecials/images/1/13/Snoopy_looking_at_the_tree.jpg/revision/latest?cb=20121205202731")
+    embed.set_author(name="brian", icon_url="https://imgur.com/a/W3of0Zw")
     
     await ctx.send(embed=embed)
 
