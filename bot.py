@@ -337,6 +337,52 @@ async def info_command(ctx):
     
     await ctx.send(embed=embed)
 
+@bot.command(name='cl1')
+async def changelog_v1(ctx):
+    if ctx.author.id != ADMIN_USER_ID:
+        return
+    
+    embed = discord.Embed(
+        title="Stock Predictor v1.0",
+        color=discord.Color.blue()
+    )
+    
+    embed.add_field(
+        name="\u200b",
+        value="• Added `/predict` command for short-term and long-term stock price predictions\n"
+              "• Added `/news` command to view recent stock news with sentiment analysis\n"
+              "• Added `/help` command to display all available commands\n"
+              "• Implemented ML models and fundamental analysis for accurate predictions\n"
+              "• Integrated Yahoo Finance API for real-time stock data and news",
+        inline=False
+    )
+    
+    # Set author with name (icon_url requires a full accessible URL)
+    # To add an icon later, upload author.jpg to a hosting service (e.g., imgur, Discord CDN) and add: icon_url="your_url_here"
+    embed.set_author(name="brian")
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name='invite')
+async def invite_command(ctx):
+    if ctx.author.id != ADMIN_USER_ID:
+        return
+    
+    embed = discord.Embed(
+        title="Invite Stock Predictor Bot",
+        description="Invite this bot to your server!",
+        color=discord.Color.green(),
+        url="https://discord.com/oauth2/authorize?client_id=1443395790620987554&permissions=2147862528&integration_type=0&scope=bot+applications.commands"
+    )
+    
+    embed.add_field(
+        name="🔗 Invite Link",
+        value="[Click here to invite the bot](https://discord.com/oauth2/authorize?client_id=1443395790620987554&permissions=2147862528&integration_type=0&scope=bot+applications.commands)",
+        inline=False
+    )
+    
+    await ctx.send(embed=embed)
+
 if __name__ == "__main__":
     token = os.getenv('DISCORD_BOT_TOKEN')
     if not token:
